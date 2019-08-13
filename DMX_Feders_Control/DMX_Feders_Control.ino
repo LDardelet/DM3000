@@ -1,5 +1,6 @@
 #include "./DMXSerial.h"
 #include <Wire.h>
+#include <EEPROM.h>
 
 /* 
 We set here the list of possible modes. Probably changed through a button or something.
@@ -16,7 +17,11 @@ int nChannels = 16;
 
 int MaxBrighness = 255; // Also change this value in SlaveArduino. If changed, multiplication factor has to be used with DMX
 int ActiveChannelThreshold = 3;
-int ChannelsBrightness[16] = {0}; // DMX Can send 1 byte of value per channel. AnalogRead will give values on a scale of 1024.
+
+byte Faders_ChannelsBrightness[16] = {0}; // Values retreived from faders read
+byte Frame_ChannelsBrightness[16] = {0}; // Values retreived from frames in EEPROM
+byte ChannelsBrightness[16] = {0}; // Actual value registered, choosen from all the previous ones
+
 int MasterValue = 255; // Used only for DMX
 // We store values tranformed from 0 to MaxBrightness 
 int ChannelsLEDsPins[16] = {53, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51};
@@ -42,9 +47,12 @@ bool ChangedValues = true;
 bool ModifiedChannels[16] = {true};
 bool ModifiedMaster = false;
 
+int FrameAddressBase = -1;
+int FrameAddressModifier = 0;
+	
 int SetModeFeders_iPin = 1; // Interrupt ID for button 0. Should associate a name with it when I knwo what it's gonna do
 int SetModeDMX_iPin = 5; // Interrupt ID for button 0. Should associate a name with it when I knwo what it's gonna do
-int InterruptButton_2 = 4; // Interrupt ID for button 0. Should associate a name with it when I knwo what it's gonna do
+int LeftTriggerButton_iPin = 4; // Interrupt ID for button 0. Should associate a name with it when I knwo what it's gonna do
 
 void setup() {
   // Initialize values for different control modes
@@ -52,6 +60,7 @@ void setup() {
   // DMXMultiplier = MaxBrighness / (float)255;
   attachInterrupt(SetModeFeders_iPin, SetModeFeders, RISING);
   attachInterrupt(SetModeDMX_iPin, SetModeDMX, RISING);
+  attachInterrupt(LeftTriggerButton_iPin, TriggerActionPlayPause, RISING);
   
   // Initialize Feders Pins Inputs
   for(int AddressBinPower=0; AddressBinPower<9; AddressBinPower++) {
@@ -88,14 +97,48 @@ void SetModeDMX() {
   Update_Mode_LEDs();
 }
 
-void RegisterDMXAddress(){
-  DMXAddress = 1; // Apparently DMXSerial uses adresses from 1 to 512
-  for(int AddressBinPower=0; AddressBinPower<9; AddressBinPower++) {
-    bool BinValue = digitalRead(DMXAddressPins[AddressBinPower]);
-    digitalWrite(ChannelsLEDsPins[nChannels - 1 - AddressBinPower], BinValue);
-    DMXAddress += BinValue * (1 << AddressBinPower);
-    // +1 Value to be checked
+int RetreiveSelectorsPinsValues() {
+  return digitalRead(Selector1Pin) << 1 | digitalRead(Selector0Pin);
+}
+
+int RetreiveAddressPinsValues(int nPins = 9, bool DigitalWrite = true){
+  int Value = 0;
+  for(int PinBinPower=0; PinBinPower<nPins; PinBinPower++) {
+    bool BinValue = digitalRead(DMXAddressPins[PinBinPower]);
+    if(DigitalWrite){
+      digitalWrite(ChannelsLEDsPins[nChannels - 1 - PinBinPower], BinValue);
+    }
+    Value += BinValue * (1 << PinBinPower);
   }
+  return Value;
+}
+
+void TriggerActionPlayPause(){
+	if (ControlMode != MANUAL_MODE) return;
+	
+	bool TriggerMode = RetreiveSelectorsPinsValues() & B1;
+	int LocalFrameAddressBase = RetreiveAddressPinsValues(8, false);
+	if(FrameAddressBase == -1 || LocalFrameAddressBase != FrameAddressBase){
+		FrameAddressBase = LocalFrameAddressBase;
+		FrameAddressModifier = 0;
+	}
+	int FrameAddress = ((FrameAddressBase + FrameAddressModifier)%256)*16; // 256 Addresses, so we loop on them. 16 bytes per frame
+	if(TriggerMode){ // Play mode
+		for(int nChannel = 0; nChannel < nChannels; nChannel++){
+			Frame_ChannelsBrightness[nChannel] = EEPROM.read(FrameAddress + nChannel);
+			ChannelsBrightness[nChannel] = Frame_ChannelsBrightness[nChannel];
+		}
+	}
+	else { // Record Mode
+		for(int nChannel = 0; nChannel < nChannels; nChannel++){
+			EEPROM.update(FrameAddress + nChannel, ChannelsBrightness[nChannel]);
+		}
+	}
+	FrameAddressModifier++;
+}
+
+void RegisterDMXAddress(){
+  DMXAddress = RetreiveAddressPinsValues() + 1;
   for(int Channel=0; Channel<nChannels; Channel++){
     DMXSerial.write(DMXAddress + Channel, 0);
   }
@@ -109,10 +152,11 @@ void ReadFedersValues(){
   for(int Channel=0; Channel<nChannels; Channel++){
     // int NewValue = (int)(analogRead(FedersAnalogPins[Channel]) * AnalogMultiplier);
     int NewValue = (AnalogMaxValue - analogRead(FedersAnalogPins[Channel])) >> 2;
-    if(NewValue != ChannelsBrightness[Channel]){
+    if(NewValue != Faders_ChannelsBrightness[Channel]){
       ChangedValues = true;
       ModifiedChannels[Channel] = true;
-      ChannelsBrightness[Channel] = NewValue;
+      Faders_ChannelsBrightness[Channel] = NewValue;
+			ChannelsBrightness[Channel] = Faders_ChannelsBrightness[Channel];
     }
   }
 }
@@ -202,4 +246,3 @@ void loop() {
     Wire.endTransmission();
   }
 }
-
