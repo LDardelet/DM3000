@@ -37,7 +37,7 @@ volatile int DMXAddress = 0;
 // float DMXMultiplier;
 volatile bool DMX_IDLE = true;
 
-volatile int ControlMode = DMX_MODE;
+volatile int ControlMode = MANUAL_MODE;
 bool ChangedValues = true;
 bool ModifiedChannels[16] = {true};
 bool ModifiedMaster = false;
